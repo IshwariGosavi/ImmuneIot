@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ImmuneIoT Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --card-bg: #181b22;
+    --text: #e8eaf0;
+    --muted: #8b90a0;
+    --trusted: #2ecc71;
+    --warning: #f1c40f;
+    --quarantine: #e74c3c;
+    --border: #2a2e38;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 24px 16px;
+  }
+  h1 {
+    text-align: center;
+    font-size: 1.6rem;
+    margin-bottom: 4px;
+  }
+  .subtitle {
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.9rem;
+    margin-bottom: 28px;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 16px;
+    max-width: 900px;
+    margin: 0 auto;
+  }
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px;
+    transition: border-color 0.3s ease;
+  }
+  .card.trusted   { border-color: var(--trusted); }
+  .card.warning   { border-color: var(--warning); }
+  .card.quarantined { border-color: var(--quarantine); }
+
+  .device-id {
+    font-weight: 600;
+    font-size: 1.05rem;
+    margin-bottom: 10px;
+  }
+  .status-badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    margin-bottom: 14px;
+  }
+  .status-badge.trusted   { background: rgba(46,204,113,0.15); color: var(--trusted); }
+  .status-badge.warning   { background: rgba(241,196,15,0.15); color: var(--warning); }
+  .status-badge.quarantined { background: rgba(231,76,60,0.15); color: var(--quarantine); }
+
+  .score-row {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    margin-bottom: 10px;
+  }
+  .score-number { font-size: 2rem; font-weight: 700; }
+  .score-max { color: var(--muted); font-size: 0.9rem; }
+
+  .bar-track {
+    width: 100%;
+    height: 6px;
+    background: #2a2e38;
+    border-radius: 6px;
+    overflow: hidden;
+    margin-bottom: 12px;
+  }
+  .bar-fill {
+    height: 100%;
+    transition: width 0.4s ease, background 0.4s ease;
+  }
+  .bar-fill.trusted   { background: var(--trusted); }
+  .bar-fill.warning   { background: var(--warning); }
+  .bar-fill.quarantined { background: var(--quarantine); }
+
+  .meta {
+    font-size: 0.8rem;
+    color: var(--muted);
+    display: flex;
+    justify-content: space-between;
+  }
+  .empty-state {
+    text-align: center;
+    color: var(--muted);
+    margin-top: 60px;
+    font-size: 0.95rem;
+  }
+  .conn-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 6px;
+  }
+  .conn-ok { background: var(--trusted); }
+  .conn-bad { background: var(--quarantine); }
+  #connStatus {
+    text-align: center;
+    font-size: 0.75rem;
+    color: var(--muted);
+    margin-bottom: 20px;
+  }
+</style>
+</head>
+<body>
+
+<h1>🛡️ ImmuneIoT</h1>
+<div class="subtitle">AI-Powered Digital Immune System for IoT Networks</div>
+<div id="connStatus"><span class="conn-dot conn-bad" id="connDot"></span><span id="connText">connecting...</span></div>
+
+<div class="grid" id="grid">
+  <div class="empty-state">Waiting for device data...</div>
+</div>
+
+<script>
+  // EDIT THIS to your laptop's IP if viewing from another device,
+  // or leave as-is if opening this file on the same machine as the Flask server.
+  const API_URL = "http://localhost:5000/status";
+  const POLL_INTERVAL_MS = 1500;
+
+  const grid = document.getElementById("grid");
+  const connDot = document.getElementById("connDot");
+  const connText = document.getElementById("connText");
+
+  function statusClass(status) {
+    if (status === "TRUSTED") return "trusted";
+    if (status === "WARNING") return "warning";
+    return "quarantined";
+  }
+
+  function statusEmoji(status) {
+    if (status === "TRUSTED") return "🟢";
+    if (status === "WARNING") return "🟡";
+    return "🔴";
+  }
+
+  function timeAgo(ts) {
+    if (!ts) return "never";
+    const secs = Math.round(Date.now()/1000 - ts);
+    if (secs < 60) return secs + "s ago";
+    return Math.round(secs/60) + "m ago";
+  }
+
+  async function poll() {
+    try {
+      const res = await fetch(API_URL);
+      const devices = await res.json();
+
+      connDot.className = "conn-dot conn-ok";
+      connText.textContent = "connected — " + devices.length + " device(s)";
+
+      if (devices.length === 0) {
+        grid.innerHTML = '<div class="empty-state">No devices have reported in yet. Waiting for ESP32...</div>';
+        return;
+      }
+
+      grid.innerHTML = devices.map(d => {
+        const cls = statusClass(d.status);
+        return `
+          <div class="card ${cls}">
+            <div class="device-id">${statusEmoji(d.status)} ${d.device_id}</div>
+            <div class="status-badge ${cls}">${d.status}</div>
+            <div class="score-row">
+              <span class="score-number">${d.trust_score}</span>
+              <span class="score-max">/ 100</span>
+            </div>
+            <div class="bar-track">
+              <div class="bar-fill ${cls}" style="width:${d.trust_score}%"></div>
+            </div>
+            <div class="meta">
+              <span>temp: ${d.last_temperature !== null ? d.last_temperature.toFixed(1) + '°C' : '—'}</span>
+              <span>${timeAgo(d.last_seen)}</span>
+            </div>
+          </div>
+        `;
+      }).join("");
+
+    } catch (err) {
+      connDot.className = "conn-dot conn-bad";
+      connText.textContent = "cannot reach backend — is app.py running?";
+    }
+  }
+
+  poll();
+  setInterval(poll, POLL_INTERVAL_MS);
+</script>
+
+</body>
+</html>
