@@ -1,105 +1,184 @@
-/*
-  ImmuneIoT - ESP32 Firmware
-  Reads a DHT11 sensor and POSTs readings to the Flask backend over HTTP.
-  Includes a built-in "attack mode" that you trigger for the demo by
-  sending the character 'a' over Serial — it fakes compromised behaviour
-  (fast messages + extreme values) WITHOUT needing a second device or
-  real hacking.
+"""
+ImmuneIoT - Flask Backend
+Receives sensor data from ESP32 devices over HTTP, runs rule-based
+anomaly detection, maintains a trust score per device, and exposes
+a /status endpoint for the dashboard.
 
-  Before uploading:
-  1. Install "DHT sensor library" by Adafruit (Library Manager)
-  2. Set WIFI_SSID, WIFI_PASSWORD, SERVER_IP below
-  3. Change DEVICE_ID per board (esp32_01, esp32_02, esp32_03...)
-*/
+Run with: python app.py
+Server runs on http://0.0.0.0:5000
+"""
 
-#include <WiFi.h>
-#include <HTTPClient.h>
-#include <DHT.h>
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+import time
+from collections import deque
 
-// ---------- CONFIG — EDIT THESE ----------
-const char* WIFI_SSID     = "YOUR_WIFI_NAME";
-const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
-const char* SERVER_IP     = "192.168.1.XXX";  // your laptop's local IP (ipconfig / ifconfig)
-const int   SERVER_PORT   = 5000;
-const char* DEVICE_ID     = "esp32_01";       // change per board!
-// ------------------------------------------
+app = Flask(__name__)
+CORS(app)  # allow the dashboard (served separately) to call this API
 
-#define DHTPIN 4          // GPIO pin the DHT11 data pin is connected to
-#define DHTTYPE DHT11
-DHT dht(DHTPIN, DHTTYPE);
+# ---------------------------------------------------------------
+# In-memory store (no DB tonight — swap for MySQL later if needed)
+# ---------------------------------------------------------------
+# devices = {
+#   "esp32_01": {
+#       "trust_score": 100,
+#       "status": "TRUSTED",
+#       "last_seen": <timestamp>,
+#       "history": deque of last N readings,
+#       "last_message_time": <timestamp>  # used for frequency check
+#   }
+# }
+devices = {}
+HISTORY_LEN = 20
 
-bool attackMode = false;
-unsigned long lastSend = 0;
-unsigned long normalInterval = 5000;   // 5 sec between messages normally
-unsigned long attackInterval = 200;    // 0.2 sec between messages when "attacked"
+# ---------------------------------------------------------------
+# Thresholds (tune these during testing based on your real sensor)
+# ---------------------------------------------------------------
+TEMP_MIN = 10
+TEMP_MAX = 45          # anything above this is "impossible" for DHT11 in a room
+MIN_MSG_INTERVAL = 1.0  # seconds; messages faster than this = suspicious
+HUM_MIN, HUM_MAX = 5, 100
+RSSI_MIN, RSSI_MAX = -100, -20   # dBm, WiFi signal strength
+CHIP_MIN, CHIP_MAX = 10, 100     # ESP32 internal temperature
+CHIP_MARGIN = 8                  # DHT11 may not exceed chip temp by more than this
+MAX_IR_TOGGLES = 40              # IR flips per report; a hand can't do more
+MAX_TEMP_JUMP = 6.0              # deg C between consecutive readings
+PENALTY_JUMP_ANOMALY = 20
+PENALTY_CROSS_CHECK = 15
+PENALTY_VALUE_ANOMALY = 30
+PENALTY_FREQUENCY_ANOMALY = 25
+RECOVERY_RATE = 2        # trust score regained per normal reading
 
-void setup() {
-  Serial.begin(115200);
-  dht.begin();
 
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.print("Connecting to WiFi");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println("\nConnected! IP: " + WiFi.localIP().toString());
-  Serial.println("Type 'a' + Enter in Serial Monitor to toggle ATTACK MODE for the demo.");
-}
+def get_device(device_id):
+    """Fetch or create a device record."""
+    if device_id not in devices:
+        devices[device_id] = {
+            "trust_score": 100,
+            "status": "TRUSTED",
+            "last_seen": None,
+            "history": deque(maxlen=HISTORY_LEN),
+            "last_message_time": None,
+        }
+    return devices[device_id]
 
-void loop() {
-  // --- check for demo trigger over Serial ---
-  if (Serial.available()) {
-    char c = Serial.read();
-    if (c == 'a') {
-      attackMode = !attackMode;
-      Serial.println(attackMode ? ">>> ATTACK MODE ON <<<" : ">>> back to normal <<<");
+
+def classify(trust_score):
+    if trust_score >= 80:
+        return "TRUSTED"
+    elif trust_score >= 50:
+        return "WARNING"
+    else:
+        return "QUARANTINED"
+
+
+@app.route("/data", methods=["POST"])
+def receive_data():
+    """
+    Expected JSON body from ESP32:
+    {
+        "device_id": "esp32_01",
+        "temperature": 27.5,
+        "humidity": 60,       # optional
+        "ir": 0               # optional, plus rssi / chip_temp / ir_toggles
     }
-  }
+    """
+    payload = request.get_json(force=True)
+    device_id = payload.get("device_id", "unknown")
+    temperature = payload.get("temperature")
 
-  unsigned long interval = attackMode ? attackInterval : normalInterval;
+    now = time.time()
+    device = get_device(device_id)
 
-  if (millis() - lastSend >= interval) {
-    lastSend = millis();
-    sendReading();
-  }
-}
+    # ---- Rule 1: message frequency check ----
+    anomaly_flags = []
+    if device["last_message_time"] is not None:
+        interval = now - device["last_message_time"]
+        if interval < MIN_MSG_INTERVAL:
+            anomaly_flags.append("HIGH_FREQUENCY")
+            device["trust_score"] -= PENALTY_FREQUENCY_ANOMALY
 
-void sendReading() {
-  float temperature = dht_readTemperature_safe();
+    # ---- Rule 2: value range check (every field) ----
+    ranges = {
+        "temperature": (TEMP_MIN, TEMP_MAX),
+        "humidity": (HUM_MIN, HUM_MAX),
+        "rssi": (RSSI_MIN, RSSI_MAX),
+        "chip_temp": (CHIP_MIN, CHIP_MAX),
+        "ir_toggles": (0, MAX_IR_TOGGLES),
+    }
+    out_of_range = [k for k, (lo, hi) in ranges.items()
+                    if payload.get(k) is not None and not lo <= payload[k] <= hi]
+    if out_of_range:
+        anomaly_flags.append("VALUE_OUT_OF_RANGE:" + ",".join(out_of_range))
+        device["trust_score"] -= PENALTY_VALUE_ANOMALY
 
-  if (attackMode) {
-    // fake an extreme/impossible value to simulate compromised sensor data
-    temperature = 90.0 + random(0, 60);  // 90-150 range, clearly abnormal
-  }
+    prev = device["history"][-1] if device["history"] else None
 
-  if (isnan(temperature)) {
-    Serial.println("Failed to read sensor, skipping this cycle.");
-    return;
-  }
+    # ---- Rule 3: physically impossible rate of change ----
+    if prev and not prev["anomalies"] and temperature is not None and prev.get("temperature") is not None:
+        if abs(temperature - prev["temperature"]) > MAX_TEMP_JUMP and "temperature" not in " ".join(out_of_range):
+            anomaly_flags.append("TEMP_JUMP")
+            device["trust_score"] -= PENALTY_JUMP_ANOMALY
 
-  if (WiFi.status() == WL_CONNECTED) {
-    HTTPClient http;
-    String url = "http://" + String(SERVER_IP) + ":" + String(SERVER_PORT) + "/data";
-    http.begin(url);
-    http.addHeader("Content-Type", "application/json");
+    # ---- Rule 4: cross-sensor check ----
+    # room temperature (DHT11) cannot be hotter than the ESP32 chip itself
+    chip = payload.get("chip_temp")
+    if temperature is not None and chip is not None and temperature > chip + CHIP_MARGIN:
+        anomaly_flags.append("SENSOR_MISMATCH")
+        device["trust_score"] -= PENALTY_CROSS_CHECK
 
-    String jsonBody = "{\"device_id\":\"" + String(DEVICE_ID) +
-                       "\",\"temperature\":" + String(temperature) + "}";
+    snapshot = {k: payload.get(k) for k in
+                ("temperature", "humidity", "chip_temp", "rssi", "ir_toggles", "ir")}
 
-    int httpResponseCode = http.POST(jsonBody);
+    # ---- Recovery: reward normal behaviour ----
+    if not anomaly_flags:
+        device["trust_score"] = min(100, device["trust_score"] + RECOVERY_RATE)
 
-    Serial.print("Sent temp=");
-    Serial.print(temperature);
-    Serial.print(" | HTTP ");
-    Serial.println(httpResponseCode);
+    # clamp
+    device["trust_score"] = max(0, min(100, device["trust_score"]))
+    device["status"] = classify(device["trust_score"])
+    device["last_seen"] = now
+    device["last_message_time"] = now
+    device["history"].append({
+        "temperature": temperature,
+        "snapshot": snapshot,
+        "timestamp": now,
+        "anomalies": anomaly_flags,
+    })
 
-    http.end();
-  } else {
-    Serial.println("WiFi disconnected!");
-  }
-}
+    print(f"[{device_id}] {snapshot} trust={device['trust_score']} "
+          f"status={device['status']} flags={anomaly_flags}")
 
-float dht_readTemperature_safe() {
-  return dht.readTemperature();
-}
+    return jsonify({
+        "device_id": device_id,
+        "trust_score": device["trust_score"],
+        "status": device["status"],
+        "anomalies": anomaly_flags,
+    })
+
+
+@app.route("/status", methods=["GET"])
+def get_status():
+    """Returns current status of all devices — polled by the dashboard."""
+    result = []
+    for device_id, d in devices.items():
+        result.append({
+            "device_id": device_id,
+            "trust_score": d["trust_score"],
+            "status": d["status"],
+            "last_seen": d["last_seen"],
+            "last_temperature": d["history"][-1]["temperature"] if d["history"] else None,
+            "last_readings": d["history"][-1]["snapshot"] if d["history"] else None,
+            "last_anomalies": d["history"][-1]["anomalies"] if d["history"] else [],
+        })
+    return jsonify(result)
+
+
+@app.route("/", methods=["GET"])
+def home():
+    return "ImmuneIoT backend running. POST sensor data to /data, GET status from /status."
+
+
+if __name__ == "__main__":
+    # host 0.0.0.0 so ESP32 on the same WiFi network can reach this machine's IP
+    app.run(host="0.0.0.0", port=5000, debug=True)
