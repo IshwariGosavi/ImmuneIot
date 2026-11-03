@@ -53,12 +53,13 @@ def device_loop(n):
             interval = 0.3
         else:
             temperature = random.uniform(26, 31)
-            interval = 5
+            interval = 2
         send(device_id, temperature)
         time.sleep(interval)
 
 
 if __name__ == "__main__":
+    print("SIMULATED DEVICES (no hardware): same JSON format and same backend as the ESP32 firmware.")
     print(f"Simulating {NUM_DEVICES} devices. Type 1-{NUM_DEVICES} + ENTER to attack/stop a device.")
     threading.Thread(target=listen_for_toggle, daemon=True).start()
     for i in range(2, NUM_DEVICES + 1):
