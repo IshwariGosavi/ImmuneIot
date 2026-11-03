@@ -1,190 +1,177 @@
-"""
-ImmuneIoT - Flask Backend
-Receives sensor data from ESP32 devices over HTTP, runs rule-based
-anomaly detection, maintains a trust score per device, and exposes
-a /status endpoint for the dashboard.
+/*
+  ImmuneIoT v3 - ESP32 firmware (DHT11 + IR sensor only, no extra parts)
+  Readings sent every 5 s:
+    temperature, humidity   (DHT11, GPIO4)
+    ir                      (IR obstacle sensor OUT, GPIO27: 1 = obstacle)
+    ir_toggles              (how many times the IR output flipped since last send)
+    rssi                    (WiFi signal strength, dBm)
+    chip_temp               (ESP32 internal temperature sensor)
+  Status feedback: onboard LED (GPIO2)
+    solid = TRUSTED, slow blink = WARNING, fast blink = QUARANTINED
+  Demo: type 'a' in Serial Monitor to toggle ATTACK MODE.
 
-Run with: python app.py
-Server runs on http://0.0.0.0:5000
-"""
+  WIRING
+    DHT11 : VCC->3V3, GND->GND, DATA->GPIO4
+    IR    : VCC->3V3, GND->GND, OUT->GPIO27
+*/
 
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-import time
-from collections import deque
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <DHT.h>
 
-app = Flask(__name__)
-CORS(app)  # allow the dashboard (served separately) to call this API
+// ---------- CONFIG - EDIT THESE ----------
+const char* WIFI_SSID     = "papoi";
+const char* WIFI_PASSWORD = "9876543211";
+const char* SERVER_IP     = "192.168.137.30";
+const int   SERVER_PORT   = 5000;
+const char* DEVICE_ID     = "esp32_01";
+// ------------------------------------------
 
-# ---------------------------------------------------------------
-# In-memory store (no DB tonight — swap for MySQL later if needed)
-# ---------------------------------------------------------------
-# devices = {
-#   "esp32_01": {
-#       "trust_score": 100,
-#       "status": "TRUSTED",
-#       "last_seen": <timestamp>,
-#       "history": deque of last N readings,
-#       "last_message_time": <timestamp>  # used for frequency check
-#   }
-# }
-devices = {}
-HISTORY_LEN = 20
+#define DHTPIN  4
+#define DHTTYPE DHT11
+#define IR_PIN  27
+#define LED_PIN 2
 
-# ---------------------------------------------------------------
-# Thresholds (tune these during testing based on your real sensor)
-# ---------------------------------------------------------------
-TEMP_MIN = 10
-TEMP_MAX = 45          # anything above this is "impossible" for DHT11 in a room
-MIN_MSG_INTERVAL = 1.0  # seconds; messages faster than this = suspicious
-HUM_MIN, HUM_MAX = 5, 100
-RSSI_MIN, RSSI_MAX = -100, -20   # dBm, WiFi signal strength
-CHIP_MIN, CHIP_MAX = 10, 100     # ESP32 internal temperature
-CHIP_MARGIN = 8                  # DHT11 may not exceed chip temp by more than this
-MAX_IR_TOGGLES = 40              # IR flips per report; a hand can't do more
-MAX_TEMP_JUMP = 6.0              # deg C between consecutive readings
-PENALTY_JUMP_ANOMALY = 20
-PENALTY_CROSS_CHECK = 15
-PENALTY_SENSOR_MISSING = 10
-PENALTY_VALUE_ANOMALY = 30
-PENALTY_FREQUENCY_ANOMALY = 25
-RECOVERY_RATE = 2        # trust score regained per normal reading
+DHT dht(DHTPIN, DHTTYPE);
 
+bool attackMode = false;
+unsigned long lastSend = 0;
+const unsigned long normalInterval = 5000;
+const unsigned long attackInterval = 200;
+const unsigned long wifiRetryInterval = 10000;
+unsigned long lastWifiTry = 0;
 
-def get_device(device_id):
-    """Fetch or create a device record."""
-    if device_id not in devices:
-        devices[device_id] = {
-            "trust_score": 100,
-            "status": "TRUSTED",
-            "last_seen": None,
-            "history": deque(maxlen=HISTORY_LEN),
-            "last_message_time": None,
-        }
-    return devices[device_id]
+int lastIr = HIGH;
+int irToggles = 0;
 
+String currentStatus = "TRUSTED";
+unsigned long lastBlink = 0;
+bool ledState = false;
 
-def classify(trust_score):
-    if trust_score >= 80:
-        return "TRUSTED"
-    elif trust_score >= 50:
-        return "WARNING"
-    else:
-        return "QUARANTINED"
+void updateLed() {
+  if (currentStatus == "TRUSTED") { digitalWrite(LED_PIN, HIGH); return; }
+  unsigned long period = (currentStatus == "WARNING") ? 600 : 120;
+  if (millis() - lastBlink >= period) {
+    lastBlink = millis();
+    ledState = !ledState;
+    digitalWrite(LED_PIN, ledState);
+  }
+}
 
+// Robust against whitespace: handles "status":"X" and "status": "X"
+String parseStatus(const String& body) {
+  int k = body.indexOf("\"status\"");
+  if (k < 0) return "";
+  int colon = body.indexOf(':', k);
+  if (colon < 0) return "";
+  int q1 = body.indexOf('"', colon + 1);
+  if (q1 < 0) return "";
+  int q2 = body.indexOf('"', q1 + 1);
+  if (q2 < 0) return "";
+  return body.substring(q1 + 1, q2);
+}
 
-@app.route("/data", methods=["POST"])
-def receive_data():
-    """
-    Expected JSON body from ESP32:
-    {
-        "device_id": "esp32_01",
-        "temperature": 27.5,
-        "humidity": 60,       # optional
-        "ir": 0               # optional, plus rssi / chip_temp / ir_toggles
+void addField(String& s, const char* key, float v, int digits = 1) {
+  s += "\""; s += key; s += "\":";
+  s += isnan(v) ? String("null") : String(v, digits);
+  s += ",";
+}
+
+void connectWiFi(unsigned long timeoutMs) {
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  Serial.print("Connecting to WiFi");
+  unsigned long start = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - start < timeoutMs) {
+    delay(500);
+    Serial.print(".");
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\nConnected! IP: " + WiFi.localIP().toString());
+  } else {
+    Serial.println("\nWiFi not connected yet, will keep retrying.");
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  dht.begin();
+  pinMode(IR_PIN, INPUT);
+  pinMode(LED_PIN, OUTPUT);
+  lastIr = digitalRead(IR_PIN);
+
+  WiFi.setAutoReconnect(true);
+  connectWiFi(20000);
+  Serial.println("Type 'a' + Enter to toggle ATTACK MODE.");
+}
+
+void loop() {
+  while (Serial.available()) {
+    char c = Serial.read();
+    if (c == 'a' || c == 'A') {
+      attackMode = !attackMode;
+      Serial.println(attackMode ? ">>> ATTACK MODE ON <<<" : ">>> back to normal <<<");
     }
-    """
-    payload = request.get_json(force=True)
-    device_id = payload.get("device_id", "unknown")
-    temperature = payload.get("temperature")
+  }
 
-    now = time.time()
-    device = get_device(device_id)
+  // poll IR fast so we can count how often it flips
+  int ir = digitalRead(IR_PIN);
+  if (ir != lastIr) { irToggles++; lastIr = ir; }
 
-    # ---- Rule 1: message frequency check ----
-    anomaly_flags = []
-    if device["last_message_time"] is not None:
-        interval = now - device["last_message_time"]
-        if interval < MIN_MSG_INTERVAL:
-            anomaly_flags.append("HIGH_FREQUENCY")
-            device["trust_score"] -= PENALTY_FREQUENCY_ANOMALY
+  updateLed();
 
-    # ---- Rule 1b: sensor missing (DHT11 unplugged / failing) ----
-    if temperature is None and payload.get("humidity") is None:
-        anomaly_flags.append("SENSOR_MISSING")
-        device["trust_score"] -= PENALTY_SENSOR_MISSING
-
-    # ---- Rule 2: value range check (every field) ----
-    ranges = {
-        "temperature": (TEMP_MIN, TEMP_MAX),
-        "humidity": (HUM_MIN, HUM_MAX),
-        "rssi": (RSSI_MIN, RSSI_MAX),
-        "chip_temp": (CHIP_MIN, CHIP_MAX),
-        "ir_toggles": (0, MAX_IR_TOGGLES),
+  // non-blocking WiFi recovery
+  if (WiFi.status() != WL_CONNECTED) {
+    if (millis() - lastWifiTry >= wifiRetryInterval) {
+      lastWifiTry = millis();
+      Serial.println("WiFi lost, reconnecting...");
+      WiFi.disconnect();
+      WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
     }
-    out_of_range = [k for k, (lo, hi) in ranges.items()
-                    if payload.get(k) is not None and not lo <= payload[k] <= hi]
-    if out_of_range:
-        anomaly_flags.append("VALUE_OUT_OF_RANGE:" + ",".join(out_of_range))
-        device["trust_score"] -= PENALTY_VALUE_ANOMALY
+    delay(5);
+    return;
+  }
 
-    prev = device["history"][-1] if device["history"] else None
+  unsigned long interval = attackMode ? attackInterval : normalInterval;
+  if (millis() - lastSend >= interval) {
+    lastSend = millis();
+    sendReading();
+  }
+  delay(5);
+}
 
-    # ---- Rule 3: physically impossible rate of change ----
-    if prev and not prev["anomalies"] and temperature is not None and prev.get("temperature") is not None:
-        if abs(temperature - prev["temperature"]) > MAX_TEMP_JUMP and "temperature" not in " ".join(out_of_range):
-            anomaly_flags.append("TEMP_JUMP")
-            device["trust_score"] -= PENALTY_JUMP_ANOMALY
+void sendReading() {
+  float temp = dht.readTemperature();
+  float hum  = dht.readHumidity();
+  float chip = temperatureRead();
+  int   rssi = WiFi.RSSI();
+  int   ir   = (digitalRead(IR_PIN) == LOW) ? 1 : 0;   // most IR modules: LOW = obstacle
+  int   toggles = irToggles;
+  irToggles = 0;
 
-    # ---- Rule 4: cross-sensor check ----
-    # room temperature (DHT11) cannot be hotter than the ESP32 chip itself
-    chip = payload.get("chip_temp")
-    if temperature is not None and chip is not None and temperature > chip + CHIP_MARGIN:
-        anomaly_flags.append("SENSOR_MISMATCH")
-        device["trust_score"] -= PENALTY_CROSS_CHECK
+  if (attackMode) {                 // spoofed / compromised data
+    temp    = 90.0 + random(0, 60);
+    hum     = 100.0 + random(0, 50);
+    toggles = random(100, 500);
+  }
 
-    snapshot = {k: payload.get(k) for k in
-                ("temperature", "humidity", "chip_temp", "rssi", "ir_toggles", "ir")}
+  String body = "{\"device_id\":\"" + String(DEVICE_ID) + "\",";
+  addField(body, "temperature", temp);
+  addField(body, "humidity", hum);
+  addField(body, "chip_temp", chip);
+  body += "\"rssi\":" + String(rssi) + ",";
+  body += "\"ir_toggles\":" + String(toggles) + ",";
+  body += "\"ir\":" + String(ir) + "}";
 
-    # ---- Recovery: reward normal behaviour ----
-    if not anomaly_flags:
-        device["trust_score"] = min(100, device["trust_score"] + RECOVERY_RATE)
-
-    # clamp
-    device["trust_score"] = max(0, min(100, device["trust_score"]))
-    device["status"] = classify(device["trust_score"])
-    device["last_seen"] = now
-    device["last_message_time"] = now
-    device["history"].append({
-        "temperature": temperature,
-        "snapshot": snapshot,
-        "timestamp": now,
-        "anomalies": anomaly_flags,
-    })
-
-    print(f"[{device_id}] {snapshot} trust={device['trust_score']} "
-          f"status={device['status']} flags={anomaly_flags}")
-
-    return jsonify({
-        "device_id": device_id,
-        "trust_score": device["trust_score"],
-        "status": device["status"],
-        "anomalies": anomaly_flags,
-    })
-
-
-@app.route("/status", methods=["GET"])
-def get_status():
-    """Returns current status of all devices — polled by the dashboard."""
-    result = []
-    for device_id, d in devices.items():
-        result.append({
-            "device_id": device_id,
-            "trust_score": d["trust_score"],
-            "status": d["status"],
-            "last_seen": d["last_seen"],
-            "last_temperature": d["history"][-1]["temperature"] if d["history"] else None,
-            "last_readings": d["history"][-1]["snapshot"] if d["history"] else None,
-            "last_anomalies": d["history"][-1]["anomalies"] if d["history"] else [],
-        })
-    return jsonify(result)
-
-
-@app.route("/", methods=["GET"])
-def home():
-    return "ImmuneIoT backend running. POST sensor data to /data, GET status from /status."
-
-
-if __name__ == "__main__":
-    # host 0.0.0.0 so ESP32 on the same WiFi network can reach this machine's IP
-    app.run(host="0.0.0.0", port=5000, debug=True)
+  HTTPClient http;
+  http.setTimeout(2000);            // don't freeze the loop if the server is down
+  http.begin("http://" + String(SERVER_IP) + ":" + String(SERVER_PORT) + "/data");
+  http.addHeader("Content-Type", "application/json");
+  int code = http.POST(body);
+  Serial.println(body + " | HTTP " + String(code));
+  if (code == 200) {
+    String s = parseStatus(http.getString());
+    if (s.length() > 0) currentStatus = s;   // keep old status if parsing fails
+  }
+  http.end();
+}
