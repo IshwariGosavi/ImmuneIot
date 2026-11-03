@@ -71,7 +71,7 @@ PENALTY_CROSS_CHECK = 15
 PENALTY_SENSOR_MISSING = 10
 PENALTY_VALUE_ANOMALY = 15
 PENALTY_FREQUENCY_ANOMALY = 10
-RECOVERY_RATE = 10       # trust score regained per normal reading
+RECOVERY_RATE = 5        # trust score regained per normal reading (gradual climb)
 
 
 def get_device(device_id):
@@ -183,6 +183,13 @@ def receive_data():
     if temperature is not None and chip is not None and temperature > chip + CHIP_MARGIN:
         anomaly_flags.append("SENSOR_MISMATCH")
         device["trust_score"] -= PENALTY_CROSS_CHECK
+
+    # ---- Rule 5 (critical): impossible values arriving at flood rate = compromised device ----
+    # Trust is zeroed immediately. This is a detection rule, not a manual override:
+    # it only fires when BOTH the flood rule and the out-of-range rule have fired.
+    if "HIGH_FREQUENCY" in anomaly_flags and any(f.startswith("VALUE_OUT_OF_RANGE") for f in anomaly_flags):
+        anomaly_flags.append("CRITICAL_ATTACK")
+        device["trust_score"] = 0
 
     # ---- Immune memory: have we seen this attack pattern before? ----
     memory_hit = False
