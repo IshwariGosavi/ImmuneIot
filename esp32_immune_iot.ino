@@ -45,6 +45,7 @@ MAX_IR_TOGGLES = 40              # IR flips per report; a hand can't do more
 MAX_TEMP_JUMP = 6.0              # deg C between consecutive readings
 PENALTY_JUMP_ANOMALY = 20
 PENALTY_CROSS_CHECK = 15
+PENALTY_SENSOR_MISSING = 10
 PENALTY_VALUE_ANOMALY = 30
 PENALTY_FREQUENCY_ANOMALY = 25
 RECOVERY_RATE = 2        # trust score regained per normal reading
@@ -97,6 +98,11 @@ def receive_data():
         if interval < MIN_MSG_INTERVAL:
             anomaly_flags.append("HIGH_FREQUENCY")
             device["trust_score"] -= PENALTY_FREQUENCY_ANOMALY
+
+    # ---- Rule 1b: sensor missing (DHT11 unplugged / failing) ----
+    if temperature is None and payload.get("humidity") is None:
+        anomaly_flags.append("SENSOR_MISSING")
+        device["trust_score"] -= PENALTY_SENSOR_MISSING
 
     # ---- Rule 2: value range check (every field) ----
     ranges = {
