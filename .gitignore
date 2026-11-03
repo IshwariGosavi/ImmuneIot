@@ -1,3 +1,6 @@
 venv/
+.venv/
 __pycache__/
 *.pyc
+attack_memory.json
+

@@ -1,35 +1,58 @@
 """
 ImmuneIoT - Flask Backend
 Receives sensor data from ESP32 devices over HTTP, runs rule-based
-anomaly detection, maintains a trust score per device, and exposes
-a /status endpoint for the dashboard.
+anomaly detection, maintains a trust score per device, remembers attack
+patterns (immune memory), and exposes /status for the dashboard.
 
 Run with: python app.py
 Server runs on http://0.0.0.0:5000
 """
 
-from flask import Flask, request, jsonify
-from flask_cors import CORS
+import json
+import os
 import time
 from collections import deque
+
+from flask import Flask, request, jsonify, send_from_directory
+from flask_cors import CORS
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 app = Flask(__name__)
 CORS(app)  # allow the dashboard (served separately) to call this API
 
 # ---------------------------------------------------------------
-# In-memory store (no DB tonight — swap for MySQL later if needed)
+# In-memory store
 # ---------------------------------------------------------------
-# devices = {
-#   "esp32_01": {
-#       "trust_score": 100,
-#       "status": "TRUSTED",
-#       "last_seen": <timestamp>,
-#       "history": deque of last N readings,
-#       "last_message_time": <timestamp>  # used for frequency check
-#   }
-# }
 devices = {}
 HISTORY_LEN = 20
+
+# ---------------------------------------------------------------
+# Immune memory
+# ---------------------------------------------------------------
+MEMORY_FILE = os.path.join(BASE_DIR, "attack_memory.json")
+MEMORY_TRUST_CAP = 10     # known attack: trust is forced down to this
+EPISODE_RESET = 5         # clean readings in a row that end an attack episode
+
+attack_memory = {}        # signature -> info about the first time we saw it
+isolations = []           # history of quarantines, used for the demo and report
+
+
+def load_memory():
+    global attack_memory
+    try:
+        with open(MEMORY_FILE) as f:
+            attack_memory = json.load(f)
+    except (OSError, ValueError):
+        attack_memory = {}
+
+
+def save_memory():
+    with open(MEMORY_FILE, "w") as f:
+        json.dump(attack_memory, f, indent=2)
+
+
+load_memory()
 
 # ---------------------------------------------------------------
 # Thresholds (tune these during testing based on your real sensor)
@@ -46,9 +69,9 @@ MAX_TEMP_JUMP = 6.0              # deg C between consecutive readings
 PENALTY_JUMP_ANOMALY = 20
 PENALTY_CROSS_CHECK = 15
 PENALTY_SENSOR_MISSING = 10
-PENALTY_VALUE_ANOMALY = 30
-PENALTY_FREQUENCY_ANOMALY = 25
-RECOVERY_RATE = 2        # trust score regained per normal reading
+PENALTY_VALUE_ANOMALY = 15
+PENALTY_FREQUENCY_ANOMALY = 10
+RECOVERY_RATE = 10       # trust score regained per normal reading
 
 
 def get_device(device_id):
@@ -60,6 +83,11 @@ def get_device(device_id):
             "last_seen": None,
             "history": deque(maxlen=HISTORY_LEN),
             "last_message_time": None,
+            "episode_start": None,
+            "episode_msgs": 0,
+            "episode_sigs": set(),
+            "mem_hit": False,
+            "clean_streak": 0,
         }
     return devices[device_id]
 
@@ -71,6 +99,29 @@ def classify(trust_score):
         return "WARNING"
     else:
         return "QUARANTINED"
+
+
+def make_signature(flags):
+    """Fingerprint of an attack = sorted list of the rules that fired."""
+    return "+".join(sorted(flags))
+
+
+def record_isolation(device_id, device, now):
+    """Called when a device enters QUARANTINED: log it and store its attack patterns."""
+    start = device["episode_start"] or now
+    kind = "memory hit" if device["mem_hit"] else "first exposure"
+    entry = {"device": device_id, "kind": kind,
+             "seconds": round(now - start, 2), "messages": device["episode_msgs"]}
+    isolations.append(entry)
+    for sig in device["episode_sigs"]:
+        attack_memory.setdefault(sig, {
+            "pattern": sig, "first_device": device_id,
+            "first_seen": time.strftime("%H:%M:%S"),
+            "seconds": entry["seconds"], "messages": entry["messages"], "hits": 0})
+    save_memory()
+    device["mem_hit"] = True   # stops this episode from triggering its own memory
+    print(f"[IMMUNE] {device_id} isolated: {kind}, "
+          f"{entry['messages']} message(s), {entry['seconds']} s")
 
 
 @app.route("/data", methods=["POST"])
@@ -133,16 +184,41 @@ def receive_data():
         anomaly_flags.append("SENSOR_MISMATCH")
         device["trust_score"] -= PENALTY_CROSS_CHECK
 
+    # ---- Immune memory: have we seen this attack pattern before? ----
+    memory_hit = False
+    if anomaly_flags:
+        device["clean_streak"] = 0
+        if device["episode_start"] is None:
+            device["episode_start"], device["episode_msgs"] = now, 0
+        device["episode_msgs"] += 1
+        sig = make_signature(anomaly_flags)
+        device["episode_sigs"].add(sig)
+        if sig in attack_memory and not device["mem_hit"]:
+            device["mem_hit"] = memory_hit = True
+            attack_memory[sig]["hits"] += 1
+            save_memory()
+            device["trust_score"] = min(device["trust_score"], MEMORY_TRUST_CAP)
+            anomaly_flags.append("KNOWN_ATTACK")
+
     snapshot = {k: payload.get(k) for k in
                 ("temperature", "humidity", "chip_temp", "rssi", "ir_toggles", "ir")}
 
     # ---- Recovery: reward normal behaviour ----
     if not anomaly_flags:
+        device["clean_streak"] += 1
+        if device["clean_streak"] >= EPISODE_RESET:
+            device["episode_start"] = None
+            device["episode_sigs"] = set()
+            device["mem_hit"] = False
         device["trust_score"] = min(100, device["trust_score"] + RECOVERY_RATE)
 
-    # clamp
+    # clamp + classify
     device["trust_score"] = max(0, min(100, device["trust_score"]))
+    old_status = device["status"]
     device["status"] = classify(device["trust_score"])
+    if device["status"] == "QUARANTINED" and old_status != "QUARANTINED":
+        record_isolation(device_id, device, now)
+
     device["last_seen"] = now
     device["last_message_time"] = now
     device["history"].append({
@@ -160,12 +236,13 @@ def receive_data():
         "trust_score": device["trust_score"],
         "status": device["status"],
         "anomalies": anomaly_flags,
+        "memory_hit": memory_hit,
     })
 
 
 @app.route("/status", methods=["GET"])
 def get_status():
-    """Returns current status of all devices — polled by the dashboard."""
+    """Returns current status of all devices - polled by the dashboard."""
     result = []
     for device_id, d in devices.items():
         result.append({
@@ -178,6 +255,25 @@ def get_status():
             "last_anomalies": d["history"][-1]["anomalies"] if d["history"] else [],
         })
     return jsonify(result)
+
+
+@app.route("/memory", methods=["GET"])
+def get_memory():
+    return jsonify({"patterns": list(attack_memory.values()),
+                    "isolations": isolations[-20:]})
+
+
+@app.route("/memory/clear", methods=["POST"])
+def clear_memory():
+    attack_memory.clear()
+    isolations.clear()
+    save_memory()
+    return jsonify({"cleared": True})
+
+
+@app.route("/dashboard", methods=["GET"])
+def dashboard():
+    return send_from_directory(BASE_DIR, "dashboard.html")
 
 
 @app.route("/", methods=["GET"])
