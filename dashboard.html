@@ -132,7 +132,8 @@ footer { color: var(--muted); font-size: 12.5px; }
   const API = BASE + "/status", POLL_MS = 1500, STALE_S = 15, WINDOW_MS = 120000, LOG_MAX = 60;
   const COLORS = ["#2f5d7c", "#8a6d2f", "#5a6b78", "#7a4f64", "#3f7a68", "#8a5a44"];
   const FLAGS = { HIGH_FREQUENCY: "Message flood", SENSOR_MISSING: "Sensor not reporting",
-                  TEMP_JUMP: "Impossible temperature change", SENSOR_MISMATCH: "Sensor cross-check failed" };
+                  TEMP_JUMP: "Impossible temperature change", SENSOR_MISMATCH: "Sensor cross-check failed",
+                  KNOWN_ATTACK: "Known attack pattern (memory hit)" };
 
   const $ = id => document.getElementById(id);
   const rowsEl = $("rows"), logEl = $("log");
