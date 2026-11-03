@@ -1,211 +1,290 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>ImmuneIoT Dashboard</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ImmuneIoT</title>
 <style>
-  :root {
-    --bg: #0f1115;
-    --card-bg: #181b22;
-    --text: #e8eaf0;
-    --muted: #8b90a0;
-    --trusted: #2ecc71;
-    --warning: #f1c40f;
-    --quarantine: #e74c3c;
-    --border: #2a2e38;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    background: var(--bg);
-    color: var(--text);
-    padding: 24px 16px;
-  }
-  h1 {
-    text-align: center;
-    font-size: 1.6rem;
-    margin-bottom: 4px;
-  }
-  .subtitle {
-    text-align: center;
-    color: var(--muted);
-    font-size: 0.9rem;
-    margin-bottom: 28px;
-  }
-  .grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-    gap: 16px;
-    max-width: 900px;
-    margin: 0 auto;
-  }
-  .card {
-    background: var(--card-bg);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 18px;
-    transition: border-color 0.3s ease;
-  }
-  .card.trusted   { border-color: var(--trusted); }
-  .card.warning   { border-color: var(--warning); }
-  .card.quarantined { border-color: var(--quarantine); }
+:root {
+  --bg: #f4f5f6; --panel: #ffffff; --line: #dcdfe3; --line-soft: #eceef0;
+  --ink: #1f2328; --muted: #656d76; --track: #e6e8eb;
+  --ok: #3f7552; --warn: #96701f; --bad: #9e3b35;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+  font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased;
+}
+.top { display: flex; justify-content: space-between; align-items: center; padding: 14px 32px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.top h1 { margin: 0; font-size: 16px; font-weight: 600; }
+.top h1 span { color: var(--muted); font-weight: 400; margin-left: 10px; }
+.conn { color: var(--muted); font-size: 13px; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 7px; background: var(--muted); }
+.dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.bad { background: var(--bad); }
 
-  .device-id {
-    font-weight: 600;
-    font-size: 1.05rem;
-    margin-bottom: 10px;
-  }
-  .status-badge {
-    display: inline-block;
-    padding: 3px 10px;
-    border-radius: 20px;
-    font-size: 0.75rem;
-    font-weight: 700;
-    letter-spacing: 0.03em;
-    margin-bottom: 14px;
-  }
-  .status-badge.trusted   { background: rgba(46,204,113,0.15); color: var(--trusted); }
-  .status-badge.warning   { background: rgba(241,196,15,0.15); color: var(--warning); }
-  .status-badge.quarantined { background: rgba(231,76,60,0.15); color: var(--quarantine); }
+main { max-width: 1180px; margin: 0 auto; padding: 24px 32px 40px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; margin-bottom: 20px; }
+.panel > h2 { margin: 0; padding: 12px 18px; font-size: 14px; font-weight: 600; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; }
+.panel > h2 small { font-weight: 400; color: var(--muted); font-size: 12.5px; }
 
-  .score-row {
-    display: flex;
-    align-items: baseline;
-    gap: 6px;
-    margin-bottom: 10px;
-  }
-  .score-number { font-size: 2rem; font-weight: 700; }
-  .score-max { color: var(--muted); font-size: 0.9rem; }
+.stats { display: grid; grid-template-columns: repeat(5, 1fr); }
+.stats div { padding: 16px 18px; border-right: 1px solid var(--line); }
+.stats div:last-child { border-right: 0; }
+.stats b { display: block; font-size: 26px; font-weight: 600; line-height: 1.2; }
+.stats span { color: var(--muted); font-size: 13px; }
 
-  .bar-track {
-    width: 100%;
-    height: 6px;
-    background: #2a2e38;
-    border-radius: 6px;
-    overflow: hidden;
-    margin-bottom: 12px;
-  }
-  .bar-fill {
-    height: 100%;
-    transition: width 0.4s ease, background 0.4s ease;
-  }
-  .bar-fill.trusted   { background: var(--trusted); }
-  .bar-fill.warning   { background: var(--warning); }
-  .bar-fill.quarantined { background: var(--quarantine); }
+.scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; font-weight: 500; color: var(--muted); font-size: 13px; padding: 9px 14px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+td { padding: 12px 14px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
+tbody tr:last-child td { border-bottom: 0; }
+th:first-child, td:first-child { padding-left: 18px; } th:last-child, td:last-child { padding-right: 18px; }
+.r { text-align: right; }
+.id { font-weight: 600; white-space: nowrap; }
+.score { display: flex; align-items: center; gap: 10px; min-width: 130px; }
+.score b { width: 28px; text-align: right; font-weight: 600; }
+.bar { flex: 1; height: 4px; background: var(--track); border-radius: 2px; overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--ok); transition: width .4s ease; }
+.bar i.warn { background: var(--warn); } .bar i.bad { background: var(--bad); }
+.temp { display: flex; align-items: center; gap: 10px; white-space: nowrap; }
+.temp b { font-weight: 600; min-width: 58px; }
+.temp svg { color: var(--muted); }
+.muted { color: var(--muted); }
+.flag { color: var(--bad); }
+.stale { color: var(--bad); }
+.empty { text-align: center; color: var(--muted); padding: 36px 18px; }
 
-  .meta {
-    font-size: 0.8rem;
-    color: var(--muted);
-    display: flex;
-    justify-content: space-between;
-  }
-  .empty-state {
-    text-align: center;
-    color: var(--muted);
-    margin-top: 60px;
-    font-size: 0.95rem;
-  }
-  .conn-dot {
-    display: inline-block;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    margin-right: 6px;
-  }
-  .conn-ok { background: var(--trusted); }
-  .conn-bad { background: var(--quarantine); }
-  #connStatus {
-    text-align: center;
-    font-size: 0.75rem;
-    color: var(--muted);
-    margin-bottom: 20px;
-  }
+.split { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 20px; align-items: start; }
+.chart { padding: 8px 14px 12px; }
+.chart text { fill: var(--muted); font-size: 11px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; padding: 0 4px; color: var(--muted); font-size: 13px; }
+.legend i { display: inline-block; width: 14px; height: 2px; margin-right: 7px; vertical-align: middle; }
+
+.log { list-style: none; margin: 0; padding: 0; max-height: 270px; overflow-y: auto; }
+.log li { display: flex; gap: 14px; padding: 9px 18px; border-bottom: 1px solid var(--line-soft); }
+.log li:last-child { border-bottom: 0; }
+.log time { color: var(--muted); flex: none; width: 68px; }
+.log .alert span { color: var(--bad); }
+.log .empty-log { color: var(--muted); }
+
+footer { color: var(--muted); font-size: 12.5px; }
+.lost { opacity: .5; }
+
+@media (max-width: 900px) { .split { grid-template-columns: 1fr; } }
+@media (max-width: 700px) {
+  .top, main { padding-left: 16px; padding-right: 16px; }
+  .stats { grid-template-columns: repeat(2, 1fr); }
+  .stats div { border-bottom: 1px solid var(--line); }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
 <body>
 
-<h1>🛡️ ImmuneIoT</h1>
-<div class="subtitle">AI-Powered Digital Immune System for IoT Networks</div>
-<div id="connStatus"><span class="conn-dot conn-bad" id="connDot"></span><span id="connText">connecting...</span></div>
-
-<div class="grid" id="grid">
-  <div class="empty-state">Waiting for device data...</div>
+<div class="top">
+  <h1>ImmuneIoT<span>Device trust monitor</span></h1>
+  <div class="conn"><i class="dot" id="connDot"></i><span id="connText">Connecting</span></div>
 </div>
 
+<main id="main">
+  <section class="panel stats">
+    <div><b id="nAll">0</b><span>Devices</span></div>
+    <div><b id="nOk">0</b><span><i class="dot ok"></i>Trusted</span></div>
+    <div><b id="nWarn">0</b><span><i class="dot warn"></i>Warning</span></div>
+    <div><b id="nBad">0</b><span><i class="dot bad"></i>Quarantined</span></div>
+    <div><b id="nAlerts">0</b><span>Alerts this session</span></div>
+  </section>
+
+  <section class="panel">
+    <h2>Devices <small id="count">0 monitored</small></h2>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Device</th><th>Status</th><th>Trust score</th><th>Temperature</th><th>Other readings</th><th>Latest detection</th><th class="r">Last seen</th></tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <div class="split">
+    <section class="panel">
+      <h2>Trust score, last 2 minutes <small>Dashed lines mark the warning (80) and quarantine (50) thresholds</small></h2>
+      <div class="chart"><div id="chart"></div><div class="legend" id="legend"></div></div>
+    </section>
+    <section class="panel">
+      <h2>Activity</h2>
+      <ul class="log" id="log"><li class="empty-log">Waiting for events.</li></ul>
+    </section>
+  </div>
+
+  <footer>Refreshes every 1.5 seconds from <span id="endpoint"></span></footer>
+</main>
+
 <script>
-  // EDIT THIS to your laptop's IP if viewing from another device,
-  // or leave as-is if opening this file on the same machine as the Flask server.
-  const API_URL = "http://localhost:5000/status";
-  const POLL_INTERVAL_MS = 1500;
+  // Backend is always Flask on port 5000. This works whether the page is opened as a file,
+  // served by Flask (/dashboard), or served by VS Code Live Server (port 5500).
+  // To point at another laptop: dashboard.html?api=http://<laptop-ip>:5000
+  const q = new URLSearchParams(location.search);
+  const host = location.protocol === "file:" || !location.hostname ? "localhost" : location.hostname;
+  const BASE = (q.get("api") || (location.port === "5000" ? location.origin : "http://" + host + ":5000")).replace(/\/$/, "");
+  const API = BASE + "/status", POLL_MS = 1500, STALE_S = 15, WINDOW_MS = 120000, LOG_MAX = 60;
+  const COLORS = ["#2f5d7c", "#8a6d2f", "#5a6b78", "#7a4f64", "#3f7a68", "#8a5a44"];
+  const FLAGS = { HIGH_FREQUENCY: "Message flood", SENSOR_MISSING: "Sensor not reporting",
+                  TEMP_JUMP: "Impossible temperature change", SENSOR_MISMATCH: "Sensor cross-check failed" };
 
-  const grid = document.getElementById("grid");
-  const connDot = document.getElementById("connDot");
-  const connText = document.getElementById("connText");
+  const $ = id => document.getElementById(id);
+  const rowsEl = $("rows"), logEl = $("log");
+  const devs = new Map();
+  let online = null, alerts = 0, logCount = 0;
+  $("endpoint").textContent = API;
 
-  function statusClass(status) {
-    if (status === "TRUSTED") return "trusted";
-    if (status === "WARNING") return "warning";
-    return "quarantined";
+  const tone = s => s === "TRUSTED" ? "ok" : s === "WARNING" ? "warn" : "bad";
+  const name = s => s === "TRUSTED" ? "Trusted" : s === "WARNING" ? "Warning" : "Quarantined";
+  const clock = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const flagText = f => f.startsWith("VALUE_OUT_OF_RANGE:")
+    ? "Out-of-range " + f.split(":")[1].replace(/_/g, " ").replace(/,/g, ", ") : (FLAGS[f] || f);
+
+  function log(text, kind) {
+    if (!logCount) logEl.innerHTML = "";
+    const li = document.createElement("li"); if (kind) li.className = kind;
+    const t = document.createElement("time"); t.textContent = clock();
+    const s = document.createElement("span"); s.textContent = text;
+    li.append(t, s); logEl.prepend(li); logCount++;
+    while (logEl.children.length > LOG_MAX) { logEl.lastChild.remove(); logCount--; }
   }
 
-  function statusEmoji(status) {
-    if (status === "TRUSTED") return "🟢";
-    if (status === "WARNING") return "🟡";
-    return "🔴";
+  function ago(ts) {
+    if (!ts) return ["Never", true];
+    const s = Math.max(0, Math.round(Date.now() / 1000 - ts));
+    return [s < 60 ? s + " s ago" : Math.round(s / 60) + " min ago", s > STALE_S];
   }
 
-  function timeAgo(ts) {
-    if (!ts) return "never";
-    const secs = Math.round(Date.now()/1000 - ts);
-    if (secs < 60) return secs + "s ago";
-    return Math.round(secs/60) + "m ago";
+  function newRow() {
+    const tr = document.createElement("tr");
+    tr.innerHTML = '<td class="id"></td><td><i class="dot"></i><span></span></td>' +
+      '<td><div class="score"><b></b><span class="bar"><i></i></span></div></td>' +
+      '<td><div class="temp"><b></b><svg width="72" height="20" viewBox="0 0 72 20" aria-hidden="true"><polyline fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg></div></td>' +
+      '<td class="muted"></td><td></td><td class="r"></td>';
+    return tr;
+  }
+
+  function spark(vals) {
+    if (vals.length < 2) return "";
+    const lo = Math.min(...vals), hi = Math.max(...vals), span = Math.max(hi - lo, 2);
+    return vals.map((v, i) => (i * 70 / (vals.length - 1) + 1).toFixed(1) + "," + (18 - (v - lo) / span * 16).toFixed(1)).join(" ");
+  }
+
+  function update(list) {
+    const keep = new Set(), c = { ok: 0, warn: 0, bad: 0 }, t = Date.now();
+    list.slice().sort((a, b) => a.trust_score - b.trust_score).forEach(d => {
+      const id = String(d.device_id), tn = tone(d.status), sc = Math.round(d.trust_score);
+      const flags = Array.isArray(d.last_anomalies) ? d.last_anomalies : [];
+      keep.add(id); c[tn]++;
+
+      let s = devs.get(id);
+      if (!s) {
+        s = { row: newRow(), trust: [], temps: [], status: null, episode: new Set(), clean: 0, seen: null, color: COLORS[devs.size % COLORS.length] };
+        devs.set(id, s);
+        log(id + " connected, " + name(d.status).toLowerCase() + ", trust " + sc);
+      } else if (s.status !== d.status) {
+        log(id + " changed from " + name(s.status).toLowerCase() + " to " + name(d.status).toLowerCase() + ", trust " + sc, tn === "bad" ? "alert" : "");
+      }
+      s.status = d.status; s.seen = d.last_seen;
+
+      const labels = flags.map(flagText);
+      if (labels.length) {
+        s.clean = 0;
+        const fresh = labels.filter(l => !s.episode.has(l));
+        if (fresh.length) { fresh.forEach(l => s.episode.add(l)); alerts++; log(id + " flagged: " + fresh.join(", "), "alert"); }
+      } else if (s.episode.size && ++s.clean >= 3) {
+        s.episode.clear(); log(id + " readings back within normal limits");
+      }
+
+      s.trust.push({ t, v: d.trust_score });
+      while (s.trust.length && t - s.trust[0].t > WINDOW_MS) s.trust.shift();
+      if (typeof d.last_temperature === "number") { s.temps.push(d.last_temperature); if (s.temps.length > 30) s.temps.shift(); }
+
+      rowsEl.appendChild(s.row);
+      const td = s.row.children;
+      td[0].textContent = id;
+      td[1].firstChild.className = "dot " + tn; td[1].lastChild.textContent = name(d.status);
+      td[2].querySelector("b").textContent = sc;
+      const f = td[2].querySelector("i"); f.className = tn === "ok" ? "" : tn; f.style.width = Math.max(0, Math.min(100, d.trust_score)) + "%";
+      td[3].querySelector("b").textContent = typeof d.last_temperature === "number" ? d.last_temperature.toFixed(1) + " °C" : "n/a";
+      td[3].querySelector("polyline").setAttribute("points", spark(s.temps));
+      const r = d.last_readings || {}, parts = [];
+      if (r.humidity != null) parts.push("Humidity " + Math.round(r.humidity) + "%");
+      if (r.rssi != null) parts.push("Signal " + r.rssi + " dBm");
+      if (r.chip_temp != null) parts.push("Chip " + Math.round(r.chip_temp) + " °C");
+      if (r.ir_toggles != null) parts.push("IR toggles " + r.ir_toggles);
+      td[4].textContent = parts.length ? parts.join(", ") : "Temperature only";
+      td[5].textContent = labels.length ? labels.join(", ") : "None"; td[5].className = labels.length ? "flag" : "muted";
+    });
+
+    devs.forEach((s, id) => { if (!keep.has(id)) { s.row.remove(); devs.delete(id); } });
+    const msg = rowsEl.querySelector(".none");
+    if (!list.length && !msg) rowsEl.innerHTML = '<tr class="none"><td colspan="7" class="empty">Backend connected, but no device has sent data yet. Start simulator.py or power on an ESP32.</td></tr>';
+    if (list.length && msg) msg.remove();
+
+    $("nAll").textContent = list.length; $("count").textContent = list.length + " monitored";
+    $("nOk").textContent = c.ok; $("nWarn").textContent = c.warn; $("nBad").textContent = c.bad;
+    $("nAlerts").textContent = alerts;
+    tick();
+  }
+
+  function tick() {   // runs every second: live "last seen" and sliding chart
+    devs.forEach(s => {
+      const [txt, stale] = ago(s.seen), cell = s.row.children[6];
+      cell.textContent = txt; cell.className = "r" + (stale ? " stale" : "");
+    });
+    draw();
+  }
+
+  function draw() {
+    const W = 720, H = 190, L = 32, R = 8, T = 8, B = 22, pw = W - L - R, ph = H - T - B;
+    const t1 = Date.now(), t0 = t1 - WINDOW_MS;
+    const X = t => L + (t - t0) / WINDOW_MS * pw, Y = v => T + (1 - v / 100) * ph;
+    let g = '<svg viewBox="0 0 ' + W + " " + H + '" width="100%" role="img" aria-label="Trust score over time">';
+    [[0, ""], [50, "4 4"], [80, "4 4"], [100, ""]].forEach(([v, dash]) => {
+      g += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + Y(v) + '" y2="' + Y(v) + '" stroke="#dcdfe3"' + (dash ? ' stroke-dasharray="' + dash + '"' : "") + "/>" +
+           '<text x="' + (L - 6) + '" y="' + (Y(v) + 4) + '" text-anchor="end">' + v + "</text>";
+    });
+    [[0, "2 min ago"], [0.5, "1 min ago"], [1, "now"]].forEach(([p, l]) => {
+      g += '<text x="' + (L + p * pw) + '" y="' + (H - 6) + '" text-anchor="' + (p === 0 ? "start" : p === 1 ? "end" : "middle") + '">' + l + "</text>";
+    });
+    let lg = "";
+    devs.forEach((s, id) => {
+      if (s.trust.length > 1)
+        g += '<polyline fill="none" stroke="' + s.color + '" stroke-width="1.8" stroke-linejoin="round" points="' +
+             s.trust.map(p => X(p.t).toFixed(1) + "," + Y(p.v).toFixed(1)).join(" ") + '"/>';
+      lg += '<span><i style="background:' + s.color + '"></i>' + id.replace(/[<>&]/g, "") + "</span>";
+    });
+    $("chart").innerHTML = g + "</svg>"; $("legend").innerHTML = lg;
+  }
+
+  function setConn(up, text) {
+    $("connDot").className = "dot " + (up ? "ok" : "bad");
+    $("connText").textContent = text;
+    $("main").classList.toggle("lost", !up);
+    if (online !== null && online !== up) log(up ? "Backend connection restored" : "Backend connection lost", up ? "" : "alert");
+    online = up;
   }
 
   async function poll() {
+    const ctrl = new AbortController(), timer = setTimeout(() => ctrl.abort(), 4000);
     try {
-      const res = await fetch(API_URL);
-      const devices = await res.json();
-
-      connDot.className = "conn-dot conn-ok";
-      connText.textContent = "connected — " + devices.length + " device(s)";
-
-      if (devices.length === 0) {
-        grid.innerHTML = '<div class="empty-state">No devices have reported in yet. Waiting for ESP32...</div>';
-        return;
-      }
-
-      grid.innerHTML = devices.map(d => {
-        const cls = statusClass(d.status);
-        return `
-          <div class="card ${cls}">
-            <div class="device-id">${statusEmoji(d.status)} ${d.device_id}</div>
-            <div class="status-badge ${cls}">${d.status}</div>
-            <div class="score-row">
-              <span class="score-number">${d.trust_score}</span>
-              <span class="score-max">/ 100</span>
-            </div>
-            <div class="bar-track">
-              <div class="bar-fill ${cls}" style="width:${d.trust_score}%"></div>
-            </div>
-            <div class="meta">
-              <span>temp: ${d.last_temperature !== null ? d.last_temperature.toFixed(1) + '°C' : '—'}</span>
-              <span>${timeAgo(d.last_seen)}</span>
-            </div>
-          </div>
-        `;
-      }).join("");
-
-    } catch (err) {
-      connDot.className = "conn-dot conn-bad";
-      connText.textContent = "cannot reach backend — is app.py running?";
-    }
+      const res = await fetch(API, { signal: ctrl.signal, cache: "no-store" });
+      if (!res.ok) throw new Error(res.status);
+      const data = await res.json();
+      setConn(true, "Connected, updated " + clock());
+      update(Array.isArray(data) ? data : []);
+    } catch (e) {
+      setConn(false, "Backend unreachable. Is app.py running?");
+    } finally { clearTimeout(timer); }
   }
-
-  poll();
-  setInterval(poll, POLL_INTERVAL_MS);
+  draw(); poll(); setInterval(poll, POLL_MS); setInterval(tick, 1000);
 </script>
-
 </body>
 </html>

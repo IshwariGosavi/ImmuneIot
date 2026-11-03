@@ -48,7 +48,7 @@ PENALTY_CROSS_CHECK = 15
 PENALTY_SENSOR_MISSING = 10
 PENALTY_VALUE_ANOMALY = 30
 PENALTY_FREQUENCY_ANOMALY = 25
-RECOVERY_RATE = 2        # trust score regained per normal reading
+RECOVERY_RATE = 5       # trust score regained per normal reading
 
 
 def get_device(device_id):
@@ -183,7 +183,12 @@ def get_status():
 @app.route("/", methods=["GET"])
 def home():
     return "ImmuneIoT backend running. POST sensor data to /data, GET status from /status."
+from flask import send_from_directory
+import os
 
+@app.route("/dashboard")
+def dashboard():
+    return send_from_directory(os.path.dirname(os.path.abspath(__file__)), "dashboard.html")
 
 if __name__ == "__main__":
     # host 0.0.0.0 so ESP32 on the same WiFi network can reach this machine's IP
